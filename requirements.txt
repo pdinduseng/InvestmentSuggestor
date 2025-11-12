@@ -1,0 +1,19 @@
+# Core dependencies
+langgraph>=0.2.0
+langchain>=0.3.0
+pyyaml>=6.0
+
+# YouTube analysis
+youtube-transcript-api>=0.6.0
+google-api-python-client>=2.0.0
+
+# Local LLM (recommended - FREE!)
+ollama>=0.3.0
+
+# Cloud LLM providers (optional - install what you need)
+google-generativeai>=0.8.0  # Gemini
+openai>=1.0.0  # OpenAI
+anthropic>=0.40.0  # Anthropic Claude
+
+# Utilities
+python-dotenv>=1.0.0

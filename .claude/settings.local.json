@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(mkdir:*)",
+      "Bash(chmod:*)",
+      "Bash(tree:*)",
+      "Bash(python3:*)",
+      "Bash(curl:*)",
+      "Bash(sh:*)",
+      "Bash(brew install:*)",
+      "Bash(brew services:*)",
+      "Bash(ollama list:*)",
+      "Bash(ollama pull:*)",
+      "Bash(source:*)",
+      "Bash(python main.py:*)",
+      "WebFetch(domain:developers.google.com)",
+      "Bash(python:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

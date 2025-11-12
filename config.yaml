@@ -1,0 +1,65 @@
+# Investment Analysis Agent Configuration
+
+# Analysis mode: ollama, gemini, youtube_api, hybrid, or auto
+# - ollama: Use local Ollama model (FREE, private, requires Ollama installed)
+# - gemini: Use Gemini API to analyze videos directly (sees visuals, paid)
+# - youtube_api: Use YouTube Transcript API + cloud LLM (verbatim transcripts, paid)
+# - hybrid: Try Gemini first, fallback to YouTube API (paid)
+# - auto: Automatically select best available (tries Ollama first, then cloud)
+analysis_mode: ollama
+
+# Ollama settings (for local models - FREE!)
+ollama_model: qwen2.5:3b  # Recommended: qwen2.5:7b, llama3.1:8b, or mistral:7b
+ollama_base_url: http://localhost:11434  # Default Ollama server URL
+
+# API Keys (only needed for cloud providers)
+# Set these in your .env file or environment
+gemini_api_key: ${GEMINI_API_KEY}
+openai_api_key: ${OPENAI_API_KEY}
+anthropic_api_key: ${ANTHROPIC_API_KEY}
+youtube_api_key: ${YOUTUBE_API_KEY}
+
+# LLM settings (for YouTube transcript mode with cloud providers)
+llm_provider: openai  # openai, anthropic, or gemini
+llm_model:  # Optional: override default model
+gemini_model: gemini-2.0-flash  # or gemini-2.5-pro
+
+# YouTube channels to analyze
+# Get channel IDs from channel URLs: youtube.com/channel/<CHANNEL_ID>
+# Or youtube.com/c/<CHANNEL_NAME> - you'll need to find the ID
+channels:
+  - channel_id: "UCrGLm-Drgv0vbbemwwHeXJw"
+    name: "CouchInvestor"
+
+  - channel_id: "UCnMn36GT_H0X-w5_ckLtlgQ"
+    name: "Financial Education"
+
+  - channel_id: "UC7kCeZ53sli_9XwuQeFxLqw"
+    name: "Ticker Symbol: YOU"
+    lookback_hours: 168  # Override: 1 week (7 days) for this channel
+
+# Analysis settings
+settings:
+  # Video collection mode: 'time_window' or 'max_videos'
+  # - time_window: Fetch videos published within the last N hours
+  # - max_videos: Fetch the most recent N videos (regardless of age)
+  collection_mode: time_window  # or 'max_videos'
+
+  # Time window in hours (only used if collection_mode = 'time_window')
+  lookback_hours: 48  # Fetch videos from last 48 hours
+
+  # Maximum videos per channel (only used if collection_mode = 'max_videos')
+  videos_per_channel: 5
+
+  # Absolute maximum (safety limit regardless of mode)
+  max_videos_per_channel: 50
+
+  # Only include stocks with confidence >= this threshold (0.0 to 1.0)
+  min_confidence: 0.6
+
+  # Maximum cost in USD for a single run (safety limit)
+  max_cost_per_run: 10.00
+
+  # Retry settings (for failed API calls)
+  max_retries: 3
+  retry_delay_seconds: 5
