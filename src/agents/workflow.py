@@ -277,7 +277,9 @@ def aggregate_stocks(state: AgentState) -> Dict:
                 'confidence': stock.get('confidence', 0.0),
                 'catalysts': stock.get('catalysts', []),
                 'price_target': stock.get('price_target'),
-                'timeframe': stock.get('timeframe')
+                'timeframe': stock.get('timeframe'),
+                'historical_note': stock.get('historical_note', ''),
+                'thesis_evolution': stock.get('thesis_evolution', '')
             })
 
             stock_map[ticker]['channels'].add(channel)
@@ -339,10 +341,19 @@ def generate_report(state: AgentState) -> Dict:
     report = []
 
     # Header
+    from datetime import datetime
     report.append("# 📊 Investment Analysis Report\n")
+    report.append(f"*Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}*\n")
     report.append(f"*Analyzed {len(state['video_analyses'])} videos across {len(state['channels'])} channels*\n")
     report.append(f"*Total cost: ${state['total_cost']:.2f}*\n")
     report.append("---\n")
+
+    # Historical context section
+    historical_insights = _generate_historical_insights(state)
+    if historical_insights:
+        report.append("## 📚 Historical Context & Trends\n")
+        report.append(historical_insights)
+        report.append("\n---\n")
 
     # High priority stocks (multiple channels)
     multi_channel = [s for s in state['aggregated_stocks'] if s['num_channels'] > 1]
@@ -363,6 +374,13 @@ def generate_report(state: AgentState) -> Dict:
                 report.append(f"- **Action:** {mention['action'].upper()}")
                 report.append(f"- **Reasoning:** {mention['reasoning']}")
                 report.append(f"- **Confidence:** {mention['confidence']:.0%}")
+
+                # Show thesis evolution if present (this is the key insight!)
+                if mention.get('thesis_evolution'):
+                    report.append(f"\n  **📈 Thesis Evolution:**")
+                    report.append(f"  > {mention['thesis_evolution']}\n")
+                elif mention.get('historical_note'):
+                    report.append(f"- **📊 Historical Note:** {mention['historical_note']}")
 
                 if mention['catalysts']:
                     report.append(f"- **Catalysts:** {', '.join(mention['catalysts'])}")
@@ -410,6 +428,86 @@ def generate_report(state: AgentState) -> Dict:
     print()
 
     return {"final_report": final_report}
+
+
+def _generate_historical_insights(state: AgentState) -> str:
+    """
+    Generate historical insights section from video analyses
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Formatted historical insights string
+    """
+    insights = []
+
+    # Check if any video has historical notes or thesis evolution
+    stocks_with_evolution = {}
+    stocks_with_history = {}
+
+    for analysis in state['video_analyses']:
+        for stock in analysis.get('stocks', []):
+            ticker = stock.get('ticker', '').upper()
+            if not ticker:
+                continue
+
+            # Prioritize thesis evolution over simple historical notes
+            thesis_evolution = stock.get('thesis_evolution', '')
+            historical_note = stock.get('historical_note', '')
+
+            if thesis_evolution:
+                if ticker not in stocks_with_evolution:
+                    stocks_with_evolution[ticker] = []
+
+                stocks_with_evolution[ticker].append({
+                    'channel': analysis.get('channel', 'Unknown'),
+                    'evolution': thesis_evolution,
+                    'action': stock.get('action', 'unknown'),
+                    'confidence': stock.get('confidence', 0.0)
+                })
+            elif historical_note:
+                if ticker not in stocks_with_history:
+                    stocks_with_history[ticker] = []
+
+                stocks_with_history[ticker].append({
+                    'channel': analysis.get('channel', 'Unknown'),
+                    'note': historical_note,
+                    'action': stock.get('action', 'unknown'),
+                    'confidence': stock.get('confidence', 0.0)
+                })
+
+    if not stocks_with_evolution and not stocks_with_history:
+        return ""
+
+    # Show thesis evolutions first (more important)
+    if stocks_with_evolution:
+        insights.append("### 📈 Significant Thesis Changes\n")
+        insights.append("*These stocks have evolved investment theses based on new information:*\n")
+
+        for ticker, evolutions in sorted(stocks_with_evolution.items()):
+            insights.append(f"\n**{ticker}**")
+            for evo_data in evolutions:
+                insights.append(f"- *{evo_data['channel']}* (Current: {evo_data['action'].upper()}, Confidence: {evo_data['confidence']:.0%})")
+                insights.append(f"  > {evo_data['evolution']}")
+
+    # Then show recurring mentions
+    if stocks_with_history:
+        if stocks_with_evolution:
+            insights.append("\n")
+        insights.append("### 🔁 Recurring Mentions\n")
+        insights.append("*These stocks were mentioned in previous analyses:*\n")
+
+        for ticker, notes in sorted(stocks_with_history.items()):
+            insights.append(f"\n**{ticker}**")
+            for note_data in notes:
+                insights.append(
+                    f"- *{note_data['channel']}*: {note_data['note']} "
+                    f"(Current: {note_data['action'].upper()}, "
+                    f"Confidence: {note_data['confidence']:.0%})"
+                )
+
+    return "\n".join(insights)
 
 
 def create_investment_agent():
