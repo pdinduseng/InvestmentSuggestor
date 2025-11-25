@@ -51,6 +51,8 @@ def main():
             "video_urls": [],
             "video_analyses": [],
             "aggregated_stocks": [],
+            "critic_result": {},
+            "investigation_results": [],
             "final_report": "",
             "errors": [],
             "total_cost": 0.0

@@ -14,6 +14,8 @@ class AgentState(TypedDict):
     video_urls: List[Dict[str, str]]
     video_analyses: List[Dict]
     aggregated_stocks: List[Dict]
+    critic_result: Dict
+    investigation_results: List[Dict]
     final_report: str
     errors: List[str]
     total_cost: float
@@ -325,6 +327,196 @@ def aggregate_stocks(state: AgentState) -> Dict:
     return {"aggregated_stocks": sorted_stocks}
 
 
+def critic_review(state: AgentState) -> Dict:
+    """
+    Review aggregated stocks for major inconsistencies
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Updated state with critic results
+    """
+    print("🔍 CRITIC REVIEW")
+    print("-" * 60)
+
+    config = state['config']
+    critic_config = config.get('critic', {})
+
+    # Check if critic is enabled
+    if not critic_config.get('enabled', True):
+        print("  ⏭️  Critic disabled, skipping review")
+        return {
+            "critic_result": {
+                'approved_stocks': [s['ticker'] for s in state['aggregated_stocks']],
+                'flagged_stocks': [],
+                'summary': 'Critic disabled',
+                'total_reviewed': len(state['aggregated_stocks'])
+            }
+        }
+
+    # Import and create critic
+    try:
+        from .critic import StockCritic
+        import os
+
+        # Get LLM provider and API key
+        llm_provider = critic_config.get('llm_provider', 'anthropic')
+        model = critic_config.get('model')
+
+        # Get API key
+        api_key = None
+        if llm_provider == 'anthropic':
+            api_key = os.getenv('ANTHROPIC_API_KEY')
+        elif llm_provider == 'openai':
+            api_key = os.getenv('OPENAI_API_KEY')
+        elif llm_provider == 'gemini':
+            api_key = os.getenv('GEMINI_API_KEY')
+
+        if not api_key:
+            print(f"  ⚠️  {llm_provider.upper()}_API_KEY not set, skipping critic review")
+            return {
+                "critic_result": {
+                    'approved_stocks': [s['ticker'] for s in state['aggregated_stocks']],
+                    'flagged_stocks': [],
+                    'summary': f'{llm_provider} API key not available',
+                    'total_reviewed': len(state['aggregated_stocks'])
+                }
+            }
+
+        # Create critic
+        critic = StockCritic(llm_provider=llm_provider, api_key=api_key, model=model)
+
+        if not critic.is_available():
+            print(f"  ⚠️  Critic not available, skipping review")
+            return {
+                "critic_result": {
+                    'approved_stocks': [s['ticker'] for s in state['aggregated_stocks']],
+                    'flagged_stocks': [],
+                    'summary': 'Critic not available',
+                    'total_reviewed': len(state['aggregated_stocks'])
+                }
+            }
+
+        # Run critic review
+        result = critic.review_stocks(state['aggregated_stocks'], state['video_analyses'])
+
+        print()
+        return {"critic_result": result}
+
+    except Exception as e:
+        error_msg = f"Critic review failed: {str(e)}"
+        print(f"  ❌ {error_msg}")
+        return {
+            "critic_result": {
+                'approved_stocks': [s['ticker'] for s in state['aggregated_stocks']],
+                'flagged_stocks': [],
+                'summary': error_msg,
+                'total_reviewed': len(state['aggregated_stocks'])
+            }
+        }
+
+
+def deep_investigation(state: AgentState) -> Dict:
+    """
+    Investigate flagged stocks with real market data
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Updated state with investigation results
+    """
+    print("🔬 DEEP INVESTIGATION")
+    print("-" * 60)
+
+    config = state['config']
+    investigator_config = config.get('investigator', {})
+    flagged_stocks = state['critic_result'].get('flagged_stocks', [])
+
+    if not flagged_stocks:
+        print("  ℹ️  No stocks flagged for investigation")
+        print()
+        return {"investigation_results": []}
+
+    # Check if investigator is enabled
+    if not investigator_config.get('enabled', True):
+        print("  ⏭️  Investigator disabled, skipping")
+        print()
+        return {"investigation_results": []}
+
+    # Import and create investigator
+    try:
+        from .investigator import MarketInvestigator
+        import os
+
+        # Get LLM provider and API key
+        llm_provider = investigator_config.get('llm_provider', 'anthropic')
+        model = investigator_config.get('model')
+
+        # Get API key
+        api_key = None
+        if llm_provider == 'anthropic':
+            api_key = os.getenv('ANTHROPIC_API_KEY')
+        elif llm_provider == 'openai':
+            api_key = os.getenv('OPENAI_API_KEY')
+        elif llm_provider == 'gemini':
+            api_key = os.getenv('GEMINI_API_KEY')
+
+        if not api_key:
+            print(f"  ⚠️  {llm_provider.upper()}_API_KEY not set, skipping investigation")
+            print()
+            return {"investigation_results": []}
+
+        # Create investigator
+        investigator = MarketInvestigator(llm_provider=llm_provider, api_key=api_key, model=model)
+
+        if not investigator.is_available():
+            print(f"  ⚠️  Investigator not available (yfinance may not be installed)")
+            print()
+            return {"investigation_results": []}
+
+        # Investigate each flagged stock
+        max_investigations = investigator_config.get('max_investigations_per_run', 10)
+        investigations = []
+
+        for i, flagged in enumerate(flagged_stocks[:max_investigations], 1):
+            ticker = flagged['ticker']
+            concern = flagged['concern']
+            investigation_focus = flagged.get('investigation_focus', 'general')
+
+            # Find original stock data
+            stock_data = next(
+                (s for s in state['aggregated_stocks'] if s['ticker'] == ticker),
+                None
+            )
+
+            if not stock_data:
+                print(f"  ⚠️  Could not find data for {ticker}")
+                continue
+
+            print(f"\n  [{i}/{min(len(flagged_stocks), max_investigations)}] {ticker}")
+
+            # Investigate
+            result = investigator.investigate_stock(
+                ticker=ticker,
+                concern=concern,
+                investigation_focus=investigation_focus,
+                stock_data=stock_data
+            )
+
+            investigations.append(result)
+
+        print()
+        return {"investigation_results": investigations}
+
+    except Exception as e:
+        error_msg = f"Investigation failed: {str(e)}"
+        print(f"  ❌ {error_msg}")
+        print()
+        return {"investigation_results": []}
+
+
 def generate_report(state: AgentState) -> Dict:
     """
     Generate final markdown report
@@ -347,6 +539,75 @@ def generate_report(state: AgentState) -> Dict:
     report.append(f"*Analyzed {len(state['video_analyses'])} videos across {len(state['channels'])} channels*\n")
     report.append(f"*Total cost: ${state['total_cost']:.2f}*\n")
     report.append("---\n")
+
+    # Critic review section
+    critic_result = state.get('critic_result', {})
+    if critic_result and critic_result.get('total_reviewed', 0) > 0:
+        report.append("## 🔍 Quality Review\n")
+        report.append(f"*{critic_result.get('summary', '')}*\n")
+
+        flagged = critic_result.get('flagged_stocks', [])
+        if flagged:
+            report.append(f"\n### ⚠️ Flagged for Investigation ({len(flagged)} stocks)\n")
+            for flag in flagged:
+                report.append(f"\n**{flag['ticker']}** - {flag.get('severity', 'unknown').upper()} severity")
+                report.append(f"\n- **Concern:** {flag['concern']}")
+                if flag.get('investigation_focus'):
+                    report.append(f"\n- **Focus:** {flag['investigation_focus']}")
+                report.append("\n")
+
+        report.append("---\n")
+
+    # Investigation results section
+    investigations = state.get('investigation_results', [])
+    if investigations:
+        report.append("## 🔬 Deep Investigation Results\n")
+        report.append(f"*{len(investigations)} stock(s) investigated with real market data*\n")
+
+        for inv in investigations:
+            ticker = inv['ticker']
+            verdict = inv['verdict']
+            reasoning = inv['reasoning']
+            recommendation = inv.get('recommendation', 'caution')
+            market_data = inv.get('market_data', {})
+
+            # Verdict emoji
+            verdict_emoji = {
+                'concern_dismissed': '✅',
+                'concern_valid': '❌',
+                'inconclusive': '❓'
+            }.get(verdict, '❓')
+
+            report.append(f"\n### {verdict_emoji} {ticker} - {verdict.replace('_', ' ').title()}\n")
+
+            # Market data summary
+            if market_data and market_data.get('current_price'):
+                report.append(f"**Market Data:**")
+                report.append(f"\n- Current Price: ${market_data['current_price']:.2f}")
+
+                if market_data.get('pe_ratio'):
+                    report.append(f"\n- P/E Ratio: {market_data['pe_ratio']:.2f}")
+
+                if market_data.get('analyst_target_price'):
+                    report.append(f"\n- Analyst Target: ${market_data['analyst_target_price']:.2f}")
+
+                if market_data.get('month_performance') is not None:
+                    report.append(f"\n- 1-Month Performance: {market_data['month_performance']:+.2f}%")
+
+                report.append("\n")
+
+            # Verdict
+            report.append(f"\n**Verdict:** {reasoning}\n")
+            report.append(f"**Recommendation:** {recommendation.upper()}\n")
+
+            # Key findings
+            if inv.get('key_findings'):
+                report.append(f"\n**Key Findings:**")
+                for finding in inv['key_findings']:
+                    report.append(f"\n- {finding}")
+                report.append("\n")
+
+        report.append("---\n")
 
     # Historical context section
     historical_insights = _generate_historical_insights(state)
@@ -510,6 +771,30 @@ def _generate_historical_insights(state: AgentState) -> str:
     return "\n".join(insights)
 
 
+def should_investigate(state: AgentState) -> str:
+    """
+    Decide whether to run deep investigation based on critic results
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Next node name
+    """
+    critic_result = state.get('critic_result', {})
+    flagged = critic_result.get('flagged_stocks', [])
+
+    # Check if investigator is enabled
+    config = state['config']
+    investigator_config = config.get('investigator', {})
+    investigator_enabled = investigator_config.get('enabled', True)
+
+    if flagged and investigator_enabled:
+        return "deep_investigation"
+    else:
+        return "generate_report"
+
+
 def create_investment_agent():
     """
     Create the LangGraph workflow for investment analysis
@@ -524,14 +809,28 @@ def create_investment_agent():
     workflow.add_node("collect_videos", collect_videos)
     workflow.add_node("analyze_videos", analyze_videos)
     workflow.add_node("aggregate_stocks", aggregate_stocks)
+    workflow.add_node("critic_review", critic_review)
+    workflow.add_node("deep_investigation", deep_investigation)
     workflow.add_node("generate_report", generate_report)
 
-    # Define edges (sequential flow)
+    # Define edges
     workflow.set_entry_point("initialize")
     workflow.add_edge("initialize", "collect_videos")
     workflow.add_edge("collect_videos", "analyze_videos")
     workflow.add_edge("analyze_videos", "aggregate_stocks")
-    workflow.add_edge("aggregate_stocks", "generate_report")
+    workflow.add_edge("aggregate_stocks", "critic_review")
+
+    # Conditional edge: investigate if stocks are flagged
+    workflow.add_conditional_edges(
+        "critic_review",
+        should_investigate,
+        {
+            "deep_investigation": "deep_investigation",
+            "generate_report": "generate_report"
+        }
+    )
+
+    workflow.add_edge("deep_investigation", "generate_report")
     workflow.add_edge("generate_report", END)
 
     return workflow.compile()

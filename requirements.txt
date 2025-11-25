@@ -7,6 +7,9 @@ pyyaml>=6.0
 youtube-transcript-api>=0.6.0
 google-api-python-client>=2.0.0
 
+# Market data (for investigator)
+yfinance>=0.2.0
+
 # Local LLM (recommended - FREE!)
 ollama>=0.3.0
 
