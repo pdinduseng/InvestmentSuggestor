@@ -228,7 +228,7 @@ Extract ALL stocks mentioned with:
 - ticker symbol (e.g., AAPL, TSLA, NVDA)
 - company name
 - action: "buy", "sell", or "hold"
-- detailed reasoning (investment thesis)
+- detailed reasoning (investment thesis): Provide a COMPREHENSIVE explanation. Include financials, macro factors, and specific arguments made in the video. Do not be brief.
 - confidence: 0.0 to 1.0 (how confident is the recommendation?)
 - catalysts: list of specific reasons or events mentioned
 - price_target: if mentioned (optional, use empty string if not mentioned)
@@ -259,7 +259,7 @@ Return valid JSON only (no markdown, no code blocks).
                 format=schema,  # Enforce JSON schema
                 options={
                     'temperature': 0.1,  # Low temperature for consistent output
-                    'num_predict': 2000  # Max tokens for response
+                    'num_predict': 4000  # Max tokens for response (increased for detailed reasoning)
                 }
             )
 

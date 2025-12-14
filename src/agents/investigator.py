@@ -19,21 +19,28 @@ class MarketInvestigator:
     Uses LLM to analyze if the concern is valid given real market data.
     """
 
-    def __init__(self, llm_provider: str = "anthropic", api_key: Optional[str] = None, model: Optional[str] = None):
+    def __init__(self, llm_provider: str = "anthropic", api_key: Optional[str] = None, model: Optional[str] = None, ollama_base_url: str = "http://localhost:11434"):
         """
         Initialize market investigator
 
         Args:
-            llm_provider: 'openai', 'anthropic', or 'gemini'
-            api_key: API key for the LLM provider
+            llm_provider: 'openai', 'anthropic', 'gemini', or 'ollama'
+            api_key: API key for the LLM provider (not needed for ollama)
             model: Optional model name (uses default if not specified)
+            ollama_base_url: Base URL for Ollama server (default: http://localhost:11434)
         """
         self.llm_provider = llm_provider
         self.api_key = api_key
         self.model = model
+        self.ollama_base_url = ollama_base_url
         self.client = None
 
-        if llm_provider == "openai":
+        if llm_provider == "ollama":
+            # Ollama doesn't need a special client, we'll use requests
+            self.model = model or "qwen2.5:3b"
+            self.client = "ollama"  # Marker to indicate it's available
+
+        elif llm_provider == "openai":
             try:
                 from openai import OpenAI
                 self.client = OpenAI(api_key=api_key)
@@ -237,7 +244,7 @@ class MarketInvestigator:
         # Format stock recommendation data
         mentions_str = "\n".join([
             f"  - {m['channel']}: {m['action'].upper()} (confidence: {m['confidence']:.0%})\n"
-            f"    Reasoning: {m['reasoning'][:150]}\n"
+            f"    Reasoning: {m['reasoning']}\n"
             f"    Price Target: {m.get('price_target', 'Not specified')}"
             for m in stock_data['mentions']
         ])
@@ -284,7 +291,29 @@ Examples:
 """
 
         try:
-            if self.llm_provider == "openai":
+            if self.llm_provider == "ollama":
+                import requests
+                response = requests.post(
+                    f"{self.ollama_base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "format": "json",
+                        "options": {
+                            "temperature": 0.1
+                        }
+                    },
+                    timeout=120
+                )
+                response.raise_for_status()
+                result_data = response.json()
+                text = result_data.get('response', '')
+                # Remove markdown if present
+                text = re.sub(r'```json\s*|\s*```', '', text).strip()
+                result = json.loads(text)
+
+            elif self.llm_provider == "openai":
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
@@ -329,6 +358,8 @@ Examples:
         """Check if investigator is available"""
         try:
             import yfinance
+            if self.llm_provider == "ollama":
+                return bool(self.client)  # ollama doesn't need API key
             return bool(self.api_key and self.client)
         except ImportError:
             return False

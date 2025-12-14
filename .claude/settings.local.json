@@ -16,7 +16,8 @@
       "Bash(source:*)",
       "Bash(python main.py:*)",
       "WebFetch(domain:developers.google.com)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(pip install:*)"
     ],
     "deny": [],
     "ask": []

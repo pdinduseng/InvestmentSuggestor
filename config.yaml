@@ -64,16 +64,16 @@ settings:
   max_retries: 3
   retry_delay_seconds: 5
 
-# Critic settings - Reviews stock recommendations for MAJOR inconsistencies
+# Critic settings - Adds critical analysis and counterpoints to recommendations
 critic:
   enabled: true  # Set to false to skip critic review
-  llm_provider: anthropic  # openai, anthropic, or gemini
-  model:  # Optional: override default model (claude-3-5-sonnet-20241022, gpt-4o, etc.)
+  llm_provider: ollama  # ollama, openai, anthropic, or gemini
+  model:  # Optional: override default model (uses ollama_model from above if ollama)
 
 # Investigator settings - Validates flagged stocks with real market data
 investigator:
   enabled: true  # Set to false to skip investigation
-  llm_provider: anthropic  # openai, anthropic, or gemini
-  model:  # Optional: override default model
+  llm_provider: ollama  # ollama, openai, anthropic, or gemini
+  model:  # Optional: override default model (uses ollama_model from above if ollama)
   max_investigations_per_run: 10  # Limit investigations for cost control
   cache_market_data_hours: 4  # Future: cache Yahoo Finance data (not implemented yet)

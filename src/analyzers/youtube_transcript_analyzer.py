@@ -301,7 +301,7 @@ Extract ALL stocks mentioned with:
 - ticker symbol (e.g., AAPL, TSLA)
 - company name
 - action: "buy", "sell", or "hold"
-- detailed reasoning (investment thesis)
+- detailed reasoning (investment thesis): Provide a COMPREHENSIVE and DETAILED explanation. Do not summarize too briefly. Explain the "why" in depth, including financials, competitive advantages, macro factors, etc.
 - confidence: 0.0 to 1.0
 - catalysts: list of specific reasons
 - price_target: if mentioned (optional)
@@ -324,7 +324,7 @@ Return ONLY valid JSON in this format:
             "ticker": "AAPL",
             "company_name": "Apple Inc.",
             "action": "buy",
-            "reasoning": "detailed explanation of current thesis",
+            "reasoning": "detailed explanation of current thesis (3-5 sentences minimum)",
             "confidence": 0.8,
             "catalysts": ["reason 1", "reason 2"],
             "price_target": "$200",
@@ -501,7 +501,7 @@ Transcript:
                         'title': title,
                         'action': stock.get('action', 'unknown'),
                         'confidence': stock.get('confidence', 0.0),
-                        'reasoning': stock.get('reasoning', '')[:300],  # Increased for better context
+                        'reasoning': stock.get('reasoning', ''),  # Full reasoning for better context
                         'catalysts': stock.get('catalysts', []),
                         'price_target': stock.get('price_target', '')
                     })

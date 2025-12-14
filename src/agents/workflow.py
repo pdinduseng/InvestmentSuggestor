@@ -1022,9 +1022,9 @@ def generate_report(state: AgentState) -> Dict:
 
             # Per-channel details
             for mention in stock['mentions']:
-                report.append(f"\n**{mention['channel']}** - [{mention['video_title'][:60]}...]({mention['video_url']})")
+                report.append(f"\n**{mention['channel']}** - [{mention['video_title']}...]({mention['video_url']})")
                 report.append(f"- **Action:** {mention['action'].upper()}")
-                report.append(f"- **Reasoning:** {mention['reasoning']}")
+                report.append(f"- **Reasoning:**\n  > {mention['reasoning']}")
                 report.append(f"- **Confidence:** {mention['confidence']:.0%}")
 
                 # Show thesis evolution if present (this is the key insight!)
@@ -1080,13 +1080,12 @@ def generate_report(state: AgentState) -> Dict:
 
         for stock in single_channel[:20]:  # Limit to top 20
             mention = stock['mentions'][0]
-            report.append(
-                f"**{stock['ticker']}** ({mention['channel']}) - "
-                f"{mention['action'].upper()} - "
-                f"{mention['reasoning']}..."
-            )
+            report.append(f"### {stock['ticker']} ({mention['channel']})")
+            report.append(f"**Action:** {mention['action'].upper()}")
+            report.append(f"**Reasoning:**\n> {mention['reasoning']}")
+            
             if mention['video_url']:
-                report.append(f" [Watch]({mention['video_url']})")
+                report.append(f"[Watch Video]({mention['video_url']})")
 
             # Add critical analysis if available (brief version for single channel)
             if stock.get('critical_analysis'):

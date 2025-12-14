@@ -50,6 +50,7 @@ def main():
             "channels": [],
             "video_urls": [],
             "video_analyses": [],
+            "failed_json_parses": [],
             "aggregated_stocks": [],
             "critic_result": {},
             "investigation_results": [],
