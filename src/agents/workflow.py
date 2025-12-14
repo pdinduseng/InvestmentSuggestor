@@ -9,11 +9,13 @@ from ..utils import load_config
 class AgentState(TypedDict):
     """State shared across all nodes in the workflow"""
     config: Dict
-    analyzer: VideoAnalyzer
+    # analyzer: VideoAnalyzer (removed to avoid serialization issues)
     channels: List[Dict[str, str]]
     video_urls: List[Dict[str, str]]
     video_analyses: List[Dict]
+    failed_json_parses: List[Dict]  # Videos with JSON parsing errors
     aggregated_stocks: List[Dict]
+    market_data: Dict  # ticker -> market data mapping
     critic_result: Dict
     investigation_results: List[Dict]
     final_report: str
@@ -52,7 +54,6 @@ def initialize_agent(state: AgentState) -> Dict:
     print()
 
     return {
-        "analyzer": analyzer,
         "channels": config['channels'],
         "total_cost": 0.0,
         "errors": []
@@ -176,13 +177,26 @@ def analyze_videos(state: AgentState) -> Dict:
         state: Current agent state
 
     Returns:
-        Updated state with video analyses
+        Updated state with video analyses and any JSON parsing failures
     """
     print("🔍 ANALYZING VIDEOS")
     print("-" * 60)
 
-    analyzer = state['analyzer']
+    # Create analyzer (re-instantiate to avoid storing in state)
+    try:
+        analyzer = create_analyzer(state['config'])
+    except Exception as e:
+        error_msg = f"Failed to recreate analyzer: {str(e)}"
+        print(f"❌ {error_msg}")
+        return {
+            "video_analyses": [],
+            "failed_json_parses": [],
+            "total_cost": 0.0,
+            "errors": state.get('errors', []) + [error_msg]
+        }
+
     analyses = []
+    failed_json = []
     total_cost = state.get('total_cost', 0.0)
 
     settings = state['config'].get('settings', {})
@@ -224,15 +238,42 @@ def analyze_videos(state: AgentState) -> Dict:
             print(f"  💰 Cost: ${estimated_cost:.4f}")
 
         except Exception as e:
-            error_msg = f"Analysis failed for {video_info['title']}: {str(e)}"
-            state['errors'].append(error_msg)
-            print(f"  ❌ {error_msg}")
+            error_str = str(e)
+
+            # Check if this is a JSON parsing error
+            if "Failed to parse" in error_str and "JSON" in error_str:
+                # Extract the malformed JSON from error message if possible
+                raw_response = None
+                if "Response: " in error_str:
+                    try:
+                        raw_response = error_str.split("Response: ", 1)[1]
+                    except:
+                        raw_response = None
+
+                print(f"  ⚠️  JSON parsing error - will attempt repair")
+                failed_json.append({
+                    'video_info': video_info,
+                    'error': error_str,
+                    'raw_response': raw_response,
+                    'analyzer_type': analyzer.get_name()
+                })
+                total_cost += estimated_cost  # Count the cost even if parsing failed
+            else:
+                # Regular error, not JSON related
+                error_msg = f"Analysis failed for {video_info['title']}: {error_str}"
+                state['errors'].append(error_msg)
+                print(f"  ❌ {error_msg}")
 
     print(f"\n💰 Total estimated cost: ${total_cost:.2f}")
+
+    if failed_json:
+        print(f"⚠️  {len(failed_json)} video(s) with JSON parsing errors will be repaired")
+
     print()
 
     return {
         "video_analyses": analyses,
+        "failed_json_parses": failed_json,
         "total_cost": total_cost
     }
 
@@ -327,6 +368,303 @@ def aggregate_stocks(state: AgentState) -> Dict:
     return {"aggregated_stocks": sorted_stocks}
 
 
+def fetch_market_data(state: AgentState) -> Dict:
+    """
+    Fetch real-time market data from Yahoo Finance for all stocks
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Updated state with market data
+    """
+    print("💹 FETCHING MARKET DATA")
+    print("-" * 60)
+
+    aggregated_stocks = state['aggregated_stocks']
+
+    if not aggregated_stocks:
+        print("  ℹ️  No stocks to fetch data for")
+        print()
+        return {"market_data": {}}
+
+    # Check if yfinance is available
+    try:
+        import yfinance as yf
+    except ImportError:
+        print("  ⚠️  yfinance not installed. Skipping market data fetch.")
+        print("  Install with: pip install yfinance")
+        print()
+        return {"market_data": {}}
+
+    market_data_map = {}
+    tickers = [stock['ticker'] for stock in aggregated_stocks]
+
+    print(f"  Fetching data for {len(tickers)} stocks...")
+
+    for ticker in tickers:
+        try:
+            print(f"    {ticker}...", end=' ')
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            history = stock.history(period="3mo")
+
+            # Get recent news
+            try:
+                news = stock.news[:3]  # Top 3 news items
+            except:
+                news = []
+
+            # Calculate key metrics
+            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+            if not current_price and not history.empty:
+                current_price = history['Close'].iloc[-1]
+
+            # Calculate recent performance
+            if not history.empty and len(history) > 20:
+                month_ago_price = history['Close'].iloc[-21]  # ~1 month
+                month_performance = ((current_price - month_ago_price) / month_ago_price * 100) if month_ago_price else None
+            else:
+                month_performance = None
+
+            market_data = {
+                'ticker': ticker,
+                'current_price': current_price,
+                'market_cap': info.get('marketCap'),
+                'pe_ratio': info.get('trailingPE'),
+                'forward_pe': info.get('forwardPE'),
+                'price_to_book': info.get('priceToBook'),
+                'fifty_two_week_high': info.get('fiftyTwoWeekHigh'),
+                'fifty_two_week_low': info.get('fiftyTwoWeekLow'),
+                'analyst_target_price': info.get('targetMeanPrice'),
+                'analyst_target_high': info.get('targetHighPrice'),
+                'analyst_target_low': info.get('targetLowPrice'),
+                'recommendation_mean': info.get('recommendationMean'),  # 1=Strong Buy, 5=Strong Sell
+                'month_performance': month_performance,
+                'sector': info.get('sector'),
+                'industry': info.get('industry'),
+                'news_headlines': [
+                    {
+                        'title': item.get('title', ''),
+                        'publisher': item.get('publisher', ''),
+                    }
+                    for item in news[:3]
+                ] if news else []
+            }
+
+            market_data_map[ticker] = market_data
+            print("✅")
+
+        except Exception as e:
+            print(f"❌ {str(e)[:50]}")
+            state['errors'].append(f"Failed to fetch market data for {ticker}: {str(e)}")
+
+    print(f"\n  ✅ Fetched data for {len(market_data_map)}/{len(tickers)} stocks")
+    print()
+
+    return {"market_data": market_data_map}
+
+
+def fix_json_errors(state: AgentState) -> Dict:
+    """
+    Repair malformed JSON responses using a specialized LLM prompt
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Updated state with repaired analyses added to video_analyses
+    """
+    print("🔧 REPAIRING JSON ERRORS")
+    print("-" * 60)
+
+    failed_parses = state.get('failed_json_parses', [])
+
+    if not failed_parses:
+        print("  ℹ️  No JSON errors to repair")
+        print()
+        return {}
+
+    config = state['config']
+    repaired_analyses = []
+    repair_failures = []
+
+    # Get LLM configuration (use same as main analyzer or fallback to anthropic)
+    llm_provider = config.get('llm_provider', 'anthropic')
+    api_key = None
+
+    import os
+    if llm_provider == 'anthropic':
+        api_key = os.getenv('ANTHROPIC_API_KEY')
+    elif llm_provider == 'openai':
+        api_key = os.getenv('OPENAI_API_KEY')
+    elif llm_provider == 'gemini':
+        api_key = os.getenv('GEMINI_API_KEY')
+
+    if not api_key:
+        print(f"  ⚠️  {llm_provider.upper()}_API_KEY not set for JSON repair")
+        print("  Skipping JSON repair - these videos will be marked as errors")
+        for failed in failed_parses:
+            state['errors'].append(f"JSON repair skipped (no API key): {failed['video_info']['title']}")
+        print()
+        return {}
+
+    # Create LLM client
+    try:
+        if llm_provider == 'anthropic':
+            from anthropic import Anthropic
+            client = Anthropic(api_key=api_key)
+            model = "claude-3-5-sonnet-20241022"
+        elif llm_provider == 'openai':
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            model = "gpt-4o"
+        elif llm_provider == 'gemini':
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            client = genai.GenerativeModel("gemini-2.0-flash")
+            model = "gemini-2.0-flash"
+    except ImportError as e:
+        print(f"  ⚠️  Failed to import {llm_provider}: {str(e)}")
+        print()
+        return {}
+
+    # Repair each failed JSON
+    for i, failed in enumerate(failed_parses, 1):
+        video_info = failed['video_info']
+        raw_response = failed.get('raw_response')
+
+        print(f"\n  [{i}/{len(failed_parses)}] Repairing: {video_info['title']}")
+
+        if not raw_response:
+            print(f"    ⚠️  No raw response available, cannot repair")
+            repair_failures.append(failed)
+            continue
+
+        # Call LLM to repair JSON
+        try:
+            repaired_json = _repair_json_with_llm(
+                client, llm_provider, model, raw_response
+            )
+
+            # Try to parse the repaired JSON
+            import json
+            analysis = json.loads(repaired_json)
+
+            # Add video metadata
+            analysis['video_url'] = video_info['url']
+            analysis['channel'] = video_info['channel']
+            analysis['title'] = video_info.get('title', 'Unknown')
+            analysis['published_at'] = video_info.get('published_at', '')
+            analysis['analysis_method'] = f"{failed['analyzer_type']}-repaired"
+
+            repaired_analyses.append(analysis)
+            print(f"    ✅ Successfully repaired - found {len(analysis.get('stocks', []))} stocks")
+
+        except Exception as e:
+            print(f"    ❌ Repair failed: {str(e)}")
+            repair_failures.append(failed)
+
+    # Add repair failures to errors
+    for failed in repair_failures:
+        error_msg = f"JSON repair failed for {failed['video_info']['title']}"
+        state['errors'].append(error_msg)
+
+    print(f"\n  ✅ Repaired: {len(repaired_analyses)}")
+    print(f"  ❌ Failed: {len(repair_failures)}")
+    print()
+
+    # Merge repaired analyses with existing ones
+    all_analyses = state['video_analyses'] + repaired_analyses
+
+    return {
+        "video_analyses": all_analyses,
+        "failed_json_parses": []  # Clear the list since we've processed them
+    }
+
+
+def _repair_json_with_llm(client, llm_provider: str, model: str, malformed_json: str) -> str:
+    """
+    Use LLM to repair malformed JSON
+
+    Args:
+        client: LLM client instance
+        llm_provider: Provider name
+        model: Model name
+        malformed_json: The malformed JSON string
+
+    Returns:
+        Repaired JSON string
+    """
+    import json
+    import re
+
+    prompt = f"""You are a JSON repair specialist. Your task is to fix malformed JSON.
+
+MALFORMED JSON:
+{malformed_json}
+
+EXPECTED SCHEMA:
+{{
+    "main_thesis": "string",
+    "stocks": [
+        {{
+            "ticker": "string",
+            "company_name": "string",
+            "action": "buy" | "sell" | "hold",
+            "reasoning": "string",
+            "confidence": 0.0 to 1.0,
+            "catalysts": ["string"],
+            "price_target": "string (optional)",
+            "timeframe": "string (optional)"
+        }}
+    ]
+}}
+
+Common issues to fix:
+1. Missing closing brackets/braces
+2. Trailing commas before closing brackets
+3. Incomplete stock objects in the array
+4. Missing quotes around strings
+5. Unclosed strings
+6. Invalid escape sequences
+
+Return ONLY the repaired, valid JSON. Do not include any explanation or markdown.
+"""
+
+    try:
+        if llm_provider == 'anthropic':
+            response = client.messages.create(
+                model=model,
+                max_tokens=4096,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            text = response.content[0].text
+            # Remove markdown if present
+            text = re.sub(r'```json\s*|\s*```', '', text).strip()
+            return text
+
+        elif llm_provider == 'openai':
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0
+            )
+            text = response.choices[0].message.content
+            text = re.sub(r'```json\s*|\s*```', '', text).strip()
+            return text
+
+        elif llm_provider == 'gemini':
+            response = client.generate_content(prompt)
+            text = response.text
+            text = re.sub(r'```json\s*|\s*```', '', text).strip()
+            return text
+
+    except Exception as e:
+        raise Exception(f"LLM repair failed: {str(e)}")
+
+
 def critic_review(state: AgentState) -> Dict:
     """
     Review aggregated stocks for major inconsistencies
@@ -348,8 +686,7 @@ def critic_review(state: AgentState) -> Dict:
         print("  ⏭️  Critic disabled, skipping review")
         return {
             "critic_result": {
-                'approved_stocks': [s['ticker'] for s in state['aggregated_stocks']],
-                'flagged_stocks': [],
+                'critical_analysis': {},
                 'summary': 'Critic disabled',
                 'total_reviewed': len(state['aggregated_stocks'])
             }
@@ -364,53 +701,77 @@ def critic_review(state: AgentState) -> Dict:
         llm_provider = critic_config.get('llm_provider', 'anthropic')
         model = critic_config.get('model')
 
-        # Get API key
+        # Get API key (not needed for ollama)
         api_key = None
-        if llm_provider == 'anthropic':
-            api_key = os.getenv('ANTHROPIC_API_KEY')
-        elif llm_provider == 'openai':
-            api_key = os.getenv('OPENAI_API_KEY')
-        elif llm_provider == 'gemini':
-            api_key = os.getenv('GEMINI_API_KEY')
+        if llm_provider == 'ollama':
+            # Ollama doesn't need API key, use base URL from config
+            ollama_base_url = config.get('ollama_base_url', 'http://localhost:11434')
+            critic = StockCritic(
+                llm_provider=llm_provider,
+                model=model or config.get('ollama_model', 'qwen2.5:3b'),
+                ollama_base_url=ollama_base_url
+            )
+        else:
+            # Cloud providers need API key
+            if llm_provider == 'anthropic':
+                api_key = os.getenv('ANTHROPIC_API_KEY')
+            elif llm_provider == 'openai':
+                api_key = os.getenv('OPENAI_API_KEY')
+            elif llm_provider == 'gemini':
+                api_key = os.getenv('GEMINI_API_KEY')
 
-        if not api_key:
-            print(f"  ⚠️  {llm_provider.upper()}_API_KEY not set, skipping critic review")
-            return {
-                "critic_result": {
-                    'approved_stocks': [s['ticker'] for s in state['aggregated_stocks']],
-                    'flagged_stocks': [],
-                    'summary': f'{llm_provider} API key not available',
-                    'total_reviewed': len(state['aggregated_stocks'])
+            if not api_key:
+                print(f"  ⚠️  {llm_provider.upper()}_API_KEY not set, skipping critic review")
+                return {
+                    "critic_result": {
+                        'critical_analysis': {},
+                        'summary': f'{llm_provider} API key not available',
+                        'total_reviewed': len(state['aggregated_stocks'])
+                    }
                 }
-            }
 
-        # Create critic
-        critic = StockCritic(llm_provider=llm_provider, api_key=api_key, model=model)
+            # Create critic with API key
+            critic = StockCritic(llm_provider=llm_provider, api_key=api_key, model=model)
 
         if not critic.is_available():
             print(f"  ⚠️  Critic not available, skipping review")
             return {
                 "critic_result": {
-                    'approved_stocks': [s['ticker'] for s in state['aggregated_stocks']],
-                    'flagged_stocks': [],
+                    'critical_analysis': {},
                     'summary': 'Critic not available',
                     'total_reviewed': len(state['aggregated_stocks'])
                 }
             }
 
-        # Run critic review
-        result = critic.review_stocks(state['aggregated_stocks'], state['video_analyses'])
+        # Run critic review with market data
+        market_data = state.get('market_data', {})
+        result = critic.review_stocks(
+            state['aggregated_stocks'],
+            state['video_analyses'],
+            market_data=market_data if market_data else None
+        )
+
+        # Merge critical analysis into aggregated stocks
+        critical_analysis = result.get('critical_analysis', {})
+        aggregated_stocks = state['aggregated_stocks']
+
+        for stock in aggregated_stocks:
+            ticker = stock['ticker']
+            if ticker in critical_analysis:
+                stock['critical_analysis'] = critical_analysis[ticker]
 
         print()
-        return {"critic_result": result}
+        return {
+            "critic_result": result,
+            "aggregated_stocks": aggregated_stocks
+        }
 
     except Exception as e:
         error_msg = f"Critic review failed: {str(e)}"
         print(f"  ❌ {error_msg}")
         return {
             "critic_result": {
-                'approved_stocks': [s['ticker'] for s in state['aggregated_stocks']],
-                'flagged_stocks': [],
+                'critical_analysis': {},
                 'summary': error_msg,
                 'total_reviewed': len(state['aggregated_stocks'])
             }
@@ -454,22 +815,32 @@ def deep_investigation(state: AgentState) -> Dict:
         llm_provider = investigator_config.get('llm_provider', 'anthropic')
         model = investigator_config.get('model')
 
-        # Get API key
+        # Get API key (not needed for ollama)
         api_key = None
-        if llm_provider == 'anthropic':
-            api_key = os.getenv('ANTHROPIC_API_KEY')
-        elif llm_provider == 'openai':
-            api_key = os.getenv('OPENAI_API_KEY')
-        elif llm_provider == 'gemini':
-            api_key = os.getenv('GEMINI_API_KEY')
+        if llm_provider == 'ollama':
+            # Ollama doesn't need API key, use base URL from config
+            ollama_base_url = config.get('ollama_base_url', 'http://localhost:11434')
+            investigator = MarketInvestigator(
+                llm_provider=llm_provider,
+                model=model or config.get('ollama_model', 'qwen2.5:3b'),
+                ollama_base_url=ollama_base_url
+            )
+        else:
+            # Cloud providers need API key
+            if llm_provider == 'anthropic':
+                api_key = os.getenv('ANTHROPIC_API_KEY')
+            elif llm_provider == 'openai':
+                api_key = os.getenv('OPENAI_API_KEY')
+            elif llm_provider == 'gemini':
+                api_key = os.getenv('GEMINI_API_KEY')
 
-        if not api_key:
-            print(f"  ⚠️  {llm_provider.upper()}_API_KEY not set, skipping investigation")
-            print()
-            return {"investigation_results": []}
+            if not api_key:
+                print(f"  ⚠️  {llm_provider.upper()}_API_KEY not set, skipping investigation")
+                print()
+                return {"investigation_results": []}
 
-        # Create investigator
-        investigator = MarketInvestigator(llm_provider=llm_provider, api_key=api_key, model=model)
+            # Create investigator with API key
+            investigator = MarketInvestigator(llm_provider=llm_provider, api_key=api_key, model=model)
 
         if not investigator.is_available():
             print(f"  ⚠️  Investigator not available (yfinance may not be installed)")
@@ -543,19 +914,8 @@ def generate_report(state: AgentState) -> Dict:
     # Critic review section
     critic_result = state.get('critic_result', {})
     if critic_result and critic_result.get('total_reviewed', 0) > 0:
-        report.append("## 🔍 Quality Review\n")
+        report.append("## 🔍 Critical Analysis Summary\n")
         report.append(f"*{critic_result.get('summary', '')}*\n")
-
-        flagged = critic_result.get('flagged_stocks', [])
-        if flagged:
-            report.append(f"\n### ⚠️ Flagged for Investigation ({len(flagged)} stocks)\n")
-            for flag in flagged:
-                report.append(f"\n**{flag['ticker']}** - {flag.get('severity', 'unknown').upper()} severity")
-                report.append(f"\n- **Concern:** {flag['concern']}")
-                if flag.get('investigation_focus'):
-                    report.append(f"\n- **Focus:** {flag['investigation_focus']}")
-                report.append("\n")
-
         report.append("---\n")
 
     # Investigation results section
@@ -624,10 +984,41 @@ def generate_report(state: AgentState) -> Dict:
 
         for stock in multi_channel:
             # Stock header
-            report.append(f"### {stock['ticker']} - {stock['company_name']}\n")
+            ticker = stock['ticker']
+            report.append(f"### {ticker} - {stock['company_name']}\n")
             report.append(f"**Coverage:** {stock['num_channels']} channels | ")
             report.append(f"**Sentiment:** {'✅ Aligned' if stock['sentiment_aligned'] else '⚠️ Mixed'} ({stock['dominant_action'].upper()}) | ")
             report.append(f"**Avg Confidence:** {stock['avg_confidence']:.0%}\n")
+
+            # Add market data if available
+            market_data_dict = state.get('market_data', {})
+            if ticker in market_data_dict:
+                mdata = market_data_dict[ticker]
+                report.append("\n**📊 Market Data:**")
+
+                if mdata.get('current_price'):
+                    report.append(f"\n- Current Price: ${mdata['current_price']:.2f}")
+
+                if mdata.get('pe_ratio'):
+                    report.append(f"\n- P/E Ratio: {mdata['pe_ratio']:.2f}")
+
+                if mdata.get('analyst_target_price'):
+                    report.append(f"\n- Analyst Avg Target: ${mdata['analyst_target_price']:.2f}")
+
+                    # Show upside/downside
+                    if mdata.get('current_price'):
+                        upside = ((mdata['analyst_target_price'] - mdata['current_price']) / mdata['current_price']) * 100
+                        report.append(f" ({upside:+.1f}% upside)")
+
+                if mdata.get('recommendation_mean'):
+                    rec_map = {1: "Strong Buy", 2: "Buy", 3: "Hold", 4: "Sell", 5: "Strong Sell"}
+                    rec_value = round(mdata['recommendation_mean'])
+                    report.append(f"\n- Analyst Consensus: {rec_map.get(rec_value, 'N/A')}")
+
+                if mdata.get('month_performance') is not None:
+                    report.append(f"\n- 1-Month Performance: {mdata['month_performance']:+.2f}%")
+
+                report.append("\n")
 
             # Per-channel details
             for mention in stock['mentions']:
@@ -654,6 +1045,31 @@ def generate_report(state: AgentState) -> Dict:
 
                 report.append("")
 
+            # Add critical analysis if available
+            if stock.get('critical_analysis'):
+                crit = stock['critical_analysis']
+                report.append("\n**⚖️ Critical Analysis:**")
+
+                if crit.get('alternative_view'):
+                    report.append(f"- **Alternative Perspective:** {crit['alternative_view']}")
+
+                if crit.get('counterpoints'):
+                    report.append(f"- **Counterpoints:**")
+                    for cp in crit['counterpoints']:
+                        report.append(f"  - {cp}")
+
+                if crit.get('risks'):
+                    report.append(f"- **Key Risks:**")
+                    for risk in crit['risks']:
+                        report.append(f"  - {risk}")
+
+                if crit.get('red_flags'):
+                    report.append(f"- **⚠️ Red Flags:**")
+                    for flag in crit['red_flags']:
+                        report.append(f"  - {flag}")
+
+                report.append("")
+
             report.append("---\n")
 
     # Single channel mentions
@@ -671,6 +1087,13 @@ def generate_report(state: AgentState) -> Dict:
             )
             if mention['video_url']:
                 report.append(f" [Watch]({mention['video_url']})")
+
+            # Add critical analysis if available (brief version for single channel)
+            if stock.get('critical_analysis'):
+                crit = stock['critical_analysis']
+                if crit.get('risks') and len(crit['risks']) > 0:
+                    report.append(f"\n  - ⚠️ Risk: {crit['risks'][0]}")
+
             report.append("\n")
 
         if len(single_channel) > 20:
@@ -771,9 +1194,9 @@ def _generate_historical_insights(state: AgentState) -> str:
     return "\n".join(insights)
 
 
-def should_investigate(state: AgentState) -> str:
+def should_repair_json(state: AgentState) -> str:
     """
-    Decide whether to run deep investigation based on critic results
+    Decide whether to repair JSON errors before aggregation
 
     Args:
         state: Current agent state
@@ -781,18 +1204,30 @@ def should_investigate(state: AgentState) -> str:
     Returns:
         Next node name
     """
-    critic_result = state.get('critic_result', {})
-    flagged = critic_result.get('flagged_stocks', [])
+    failed_json = state.get('failed_json_parses', [])
 
-    # Check if investigator is enabled
-    config = state['config']
-    investigator_config = config.get('investigator', {})
-    investigator_enabled = investigator_config.get('enabled', True)
-
-    if flagged and investigator_enabled:
-        return "deep_investigation"
+    if failed_json:
+        return "fix_json_errors"
     else:
-        return "generate_report"
+        return "aggregate_stocks"
+
+
+def should_investigate(state: AgentState) -> str:
+    """
+    Decide whether to run deep investigation based on critic results
+
+    Note: Since critic now provides critical analysis instead of flagging stocks,
+    investigation is skipped by default. This function is kept for backwards compatibility.
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Next node name
+    """
+    # Critic no longer flags stocks for investigation
+    # It provides critical analysis inline instead
+    return "generate_report"
 
 
 def create_investment_agent():
@@ -808,7 +1243,9 @@ def create_investment_agent():
     workflow.add_node("initialize", initialize_agent)
     workflow.add_node("collect_videos", collect_videos)
     workflow.add_node("analyze_videos", analyze_videos)
+    workflow.add_node("fix_json_errors", fix_json_errors)
     workflow.add_node("aggregate_stocks", aggregate_stocks)
+    workflow.add_node("fetch_market_data", fetch_market_data)
     workflow.add_node("critic_review", critic_review)
     workflow.add_node("deep_investigation", deep_investigation)
     workflow.add_node("generate_report", generate_report)
@@ -817,8 +1254,25 @@ def create_investment_agent():
     workflow.set_entry_point("initialize")
     workflow.add_edge("initialize", "collect_videos")
     workflow.add_edge("collect_videos", "analyze_videos")
-    workflow.add_edge("analyze_videos", "aggregate_stocks")
-    workflow.add_edge("aggregate_stocks", "critic_review")
+
+    # Conditional edge: repair JSON if there are parsing errors
+    workflow.add_conditional_edges(
+        "analyze_videos",
+        should_repair_json,
+        {
+            "fix_json_errors": "fix_json_errors",
+            "aggregate_stocks": "aggregate_stocks"
+        }
+    )
+
+    # After JSON repair, go to aggregation
+    workflow.add_edge("fix_json_errors", "aggregate_stocks")
+
+    # After aggregation, fetch market data
+    workflow.add_edge("aggregate_stocks", "fetch_market_data")
+
+    # After market data, run critic review
+    workflow.add_edge("fetch_market_data", "critic_review")
 
     # Conditional edge: investigate if stocks are flagged
     workflow.add_conditional_edges(
